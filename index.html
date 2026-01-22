@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>拉密 Rummikub (精準語音版)</title>
+    <title>拉密 Rummikub (全域破冰版)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@700&family=Noto+Sans+TC:wght@400;700&display=swap');
@@ -225,6 +225,10 @@
         <div id="turn-indicator" aria-live="polite" class="mx-auto px-6 py-1.5 bg-blue-600 text-white rounded-full shadow-md text-sm font-bold tracking-wide transition-colors">
             遊戲準備中...
         </div>
+        <!-- 顯示全域破冰狀態 -->
+        <div id="ice-status" class="text-center text-xs text-gray-500 font-mono mt-1">
+            尚未破冰 (需 30 分)
+        </div>
     </header>
 
     <main id="board-container" class="flex-1 overflow-y-auto p-4 space-y-6 scroll-smooth relative" role="main" aria-label="遊戲桌面">
@@ -337,18 +341,17 @@
             synth: window.speechSynthesis,
             speak: function(text, priority = false, onEndCallback = null) {
                 if (!this.synth) {
-                    if(onEndCallback) setTimeout(onEndCallback, 500); // Fallback if no synth
+                    if(onEndCallback) setTimeout(onEndCallback, 500); 
                     return;
                 }
                 
-                // Human actions prioritize over previous speech
                 if (priority) {
                     this.synth.cancel();
                 }
                 
                 const utterance = new SpeechSynthesisUtterance(text);
                 utterance.lang = 'zh-TW';
-                utterance.rate = 2.2; // Speed up
+                utterance.rate = 2.2; 
                 
                 if (onEndCallback) {
                     utterance.onend = () => {
@@ -401,6 +404,7 @@
                 this.selectedTiles = []; 
                 this.isProcessingAI = false;
                 this.initialOnBoardTileIds = new Set(); 
+                this.isGlobalIceBroken = false; // 全域破冰狀態
 
                 this.initGame();
                 this.setupKeyboardShortcuts();
@@ -412,6 +416,7 @@
                 this.dealInitialHands();
                 this.board = [];
                 this.turn = 0; 
+                this.isGlobalIceBroken = false;
                 this.saveBackup();
                 this.render();
                 speaker.speak("遊戲開始", false);
@@ -556,6 +561,7 @@
                 this.backupState = {
                     hand: JSON.parse(JSON.stringify(this.getCurrentPlayer().hand)),
                     board: JSON.parse(JSON.stringify(this.board)),
+                    globalIceBroken: this.isGlobalIceBroken
                 };
                 
                 this.initialOnBoardTileIds.clear();
@@ -570,6 +576,7 @@
                 if (this.backupState && this.players[this.turn].type === 'human') {
                     this.getCurrentPlayer().hand = JSON.parse(JSON.stringify(this.backupState.hand));
                     this.board = JSON.parse(JSON.stringify(this.backupState.board));
+                    this.isGlobalIceBroken = this.backupState.globalIceBroken;
                     this.selectedTiles = [];
                     this.render();
                     speaker.speak("已還原", true);
@@ -712,7 +719,6 @@
                         speaker.speak(`抽到 ${getTileText(card)}，回合結束`, true);
                         this.nextTurn();
                     } else {
-                        // AI 抽牌 - 修正語音
                         const text = `${this.players[this.turn].name} 抽牌`;
                         speaker.speak(text, false, () => this.nextTurn());
                     }
@@ -754,7 +760,8 @@
 
                 const player = this.getCurrentPlayer();
                 
-                if (!player.hasBrokenIce) {
+                // === 破冰檢查 (Global) ===
+                if (!this.isGlobalIceBroken) {
                     let totalNewMeldValue = 0;
 
                     for (let group of this.board) {
@@ -778,8 +785,8 @@
                         return;
                     }
                     
-                    player.hasBrokenIce = true;
-                    speaker.speak("破冰成功！", true);
+                    this.isGlobalIceBroken = true;
+                    speaker.speak("破冰成功！所有人皆可出牌。", true);
                 }
 
                 if (currentHandSize === 0) {
@@ -803,7 +810,6 @@
                     setTimeout(() => this.playAITurn(), 300);
                 } else {
                     this.isProcessingAI = false;
-                    // Queue 'Your Turn' after previous speech finishes
                     speaker.speak("輪到你了", false);
                     setTimeout(() => this.focusFirstIn('#hand-area .tile'), 100);
                 }
@@ -813,7 +819,7 @@
                 try {
                     const ai = this.getCurrentPlayer();
                     let movesMade = false;
-                    let justBrokeIceThisTurn = false; 
+                    
                     let tempHand = [...ai.hand];
                     let playedTiles = []; 
                     let cardsPlayedThisTurn = []; 
@@ -845,11 +851,11 @@
                         }
                     }
 
-                    if (!ai.hasBrokenIce) {
+                    if (!this.isGlobalIceBroken) {
                         let totalVal = 0;
                         playedTiles.forEach(g => totalVal += this.calculateGroupValue(g));
                         if (totalVal < 30) { this.drawCard(true); return; } 
-                        else { justBrokeIceThisTurn = true; ai.hasBrokenIce = true; }
+                        else { this.isGlobalIceBroken = true; }
                     }
 
                     if (playedTiles.length > 0) {
@@ -864,7 +870,7 @@
                         movesMade = true;
                     }
 
-                    if (ai.hasBrokenIce && !justBrokeIceThisTurn) {
+                    if (this.isGlobalIceBroken) {
                         for (let i = ai.hand.length - 1; i >= 0; i--) {
                             const tile = ai.hand[i];
                             if (tile.isJoker) continue; 
@@ -1091,7 +1097,16 @@
             render() {
                 const currentPlayer = this.players[this.turn];
                 const indicator = document.getElementById('turn-indicator');
+                const iceStatus = document.getElementById('ice-status');
                 
+                if (this.isGlobalIceBroken) {
+                    iceStatus.innerText = "已破冰";
+                    iceStatus.className = "text-center text-xs text-green-600 font-bold mt-1";
+                } else {
+                    iceStatus.innerText = "尚未破冰 (需 30 分)";
+                    iceStatus.className = "text-center text-xs text-gray-500 font-mono mt-1";
+                }
+
                 if(currentPlayer.type === 'computer') {
                     indicator.innerText = `${currentPlayer.name} 思考中...`;
                     indicator.className = "mx-auto px-6 py-1.5 bg-gray-500 text-white rounded-full shadow-md text-sm font-bold tracking-wide transition-colors";
